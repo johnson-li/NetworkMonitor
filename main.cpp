@@ -70,8 +70,8 @@ void on_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pac
   }
 }
 
-std::string get_ip(std::string nic) {
-  ifreq ifr;
+std::string get_ip(const std::string &nic) {
+  ifreq ifr{};
   int fd = socket(AF_INET, SOCK_DGRAM, 0);
   ifr.ifr_addr.sa_family = AF_INET;
   strncpy(ifr.ifr_name, nic.c_str(), IFNAMSIZ - 1);
@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
   bpf_program fp{};      /* compiled filter program (expression) */
   char filter_exp[] = "ip";    /* filter expression [3] */
   bpf_u_int32 mask;      /* subnet mask */
-  bpf_u_int32 net;      /* ip */
+  bpf_u_int32 net;      /* subnet address */
 
   if (pcap_lookupnet(dev.c_str(), &net, &mask, err_buf) == -1) {
     std::cerr << "Couldn't get netmask for device " << dev << ": " << err_buf << std::endl;
