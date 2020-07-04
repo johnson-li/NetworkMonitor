@@ -10,13 +10,30 @@
 #include <cstring>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <boost/program_options.hpp>
+
+namespace po = boost::program_options;
 
 /* default snap length (maximum bytes per packet to capture) */
 #define SNAP_LEN 10240
 
+/* statics for calculating bandwidth */
 long uploaded = 0, downloaded = 0, uploaded_pre = 0, downloaded_pre = 0;
 std::string my_ip;
 long timestamp = 0;
+
+/* static variables */
+std::vector<std::string> PROTOCOLS{"TCP", "UDP", "ICMP"};
+
+/* configurations */
+int PORT = 0;
+int PORT_SRC = 0;
+int PORT_DST = 0;
+uint32_t IP = 0;
+uint32_t IP_SRC = 0;
+uint32_t IP_DST = 0;
+std::string PROTOCOL = "";
+std::string LOG_FILE = "network.log";
 
 void on_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
   timespec monotime{};
@@ -48,9 +65,10 @@ void on_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pac
   }
   std::cout << "Got " << type << " packet from " << src << ":" << sport <<
             " to " << dst << ":" << dport << " of " << header->len << " bytes at "
-            << monotime.tv_sec * 1000 + monotime.tv_nsec / 1000000 << std::endl;
+            << monotime.tv_sec * 1000 + monotime.tv_nsec / 1000000
+            << " [" << header->ts.tv_sec * 1000 + header->ts.tv_usec / 1000 << "]"
+            << std::endl;
 
-  std::cout << src << " " << my_ip << std::endl;
   if (src == my_ip) {
     uploaded += header->len;
   } else {
@@ -63,7 +81,8 @@ void on_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *pac
   if (monotime.tv_sec > timestamp) {
     std::cout << "Downlink bandwidth: " << (downloaded - downloaded_pre) / (monotime.tv_sec - timestamp)
               << " bps, uplink bandwidth: " << (uploaded - uploaded_pre) / (monotime.tv_sec - timestamp)
-              << " bps, at " << monotime.tv_sec * 1000 + monotime.tv_nsec / 1000000 << std::endl;
+              << " bps, at " << monotime.tv_sec * 1000 + monotime.tv_nsec / 1000000
+              << std::endl;
     downloaded_pre = downloaded;
     uploaded_pre = uploaded;
     timestamp = monotime.tv_sec;
@@ -80,8 +99,87 @@ std::string get_ip(const std::string &nic) {
   return inet_ntoa(((sockaddr_in *) &ifr.ifr_ifru.ifru_addr)->sin_addr);
 }
 
+void arg_parse(int argc, char **argv) {
+  po::options_description desc("Allowed options");
+  desc.add_options()
+          ("help", "print help message")
+          ("log_file", po::value<std::string>(), "set the logger file")
+          ("ip", po::value<std::string>(), "filter by IP address")
+          ("port", po::value<int>(), "filter by port")
+          ("src_port", po::value<int>(), "filter by src port")
+          ("dst_port", po::value<int>(), "filter by dst port")
+          ("src", po::value<std::string>(), "filter by source IP address")
+          ("dst", po::value<std::string>(), "filter by destination IP address")
+          ("protocol", po::value<std::string>(), "filter by transport layer protocol");
+
+  po::variables_map vm;
+  try {
+    po::store(po::parse_command_line(argc, argv, desc), vm);
+  } catch (std::exception &e) {
+    std::cerr << e.what() << std::endl << std::endl;
+    std::cerr << desc << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  po::notify(vm);
+
+  if (vm.count("help")) {
+    std::cout << desc << "\n";
+    exit(EXIT_SUCCESS);
+  }
+  if (vm.count("log_file")) {
+    LOG_FILE = vm["log_file"].as<std::string>();
+  }
+  if (vm.count("ip_src")) {
+    inet_pton(AF_INET, vm["ip_src"].as<std::string>().c_str(), &IP_SRC);
+  }
+  if (vm.count("ip_dst")) {
+    inet_pton(AF_INET, vm["ip_dst"].as<std::string>().c_str(), &IP_DST);
+  }
+  if (vm.count("ip")) {
+    inet_pton(AF_INET, vm["ip"].as<std::string>().c_str(), &IP);
+    if (IP_SRC != 0 || IP_DST != 0) {
+      std::cerr << "ip should not be set along with src/dst" << std::endl;
+    }
+  }
+  if (vm.count("src_port")) {
+    PORT_SRC = vm["src_port"].as<int>();
+  }
+  if (vm.count("dst_port")) {
+    PORT_DST = vm["dst_port"].as<int>();
+  }
+  if (vm.count("port")) {
+    PORT = vm["port"].as<int>();
+    if (PORT_SRC > 0 || PORT_DST > 0) {
+      std::cerr << "port should not be set along with src_port/dst_port" << std::endl;
+    }
+  }
+  if (vm.count("protocol")) {
+    PROTOCOL = vm["protocol"].as<std::string>();
+    if (std::find(std::begin(PROTOCOLS), std::end(PROTOCOLS), PROTOCOL) == std::end(PROTOCOLS)) {
+      std::cerr << "Invalid protocol: " << PROTOCOL << std::endl;
+      exit(EXIT_FAILURE);
+    }
+  }
+}
+
+void setup_filters(pcap_t *handle) {
+  bpf_program fp{};      /* compiled filter program (expression) */
+  if (IP != 0) {
+    char str[INET_ADDRSTRLEN];
+    int res = 0;
+    inet_ntop(AF_INET, &IP, str, INET_ADDRSTRLEN);
+    std::cout << "ip: " << str << std::endl;
+    res = pcap_compile(handle, &fp, "ip", 0, IP);
+    std::cout << res << std::endl;
+    res = pcap_setfilter(handle, &fp);
+    std::cout << res << std::endl;
+  }
+}
+
 int main(int argc, char **argv) {
-  std::string dev = "wlp0s20f3";      /* capture device name */
+  arg_parse(argc, argv);
+
+  std::string dev = "lo";      /* capture device name */
   char err_buf[PCAP_ERRBUF_SIZE];    /* error buffer */
   pcap_t *handle;        /* packet capture handle */
   int num_packets = 0;      /* number of packets to capture */
@@ -105,6 +203,7 @@ int main(int argc, char **argv) {
     std::cerr << dev << " is not an Ethernet device" << std::endl;
     exit(EXIT_FAILURE);
   }
+//  setup_filters(handle);
   if (pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
     fprintf(stderr, "Couldn't parse filter %s: %s\n",
             filter_exp, pcap_geterr(handle));

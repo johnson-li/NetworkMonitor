@@ -5,4 +5,4 @@ set(CMAKE_CXX_STANDARD 14)
 
 add_executable(NetworkMonitor main.cpp)
 
-target_link_libraries(NetworkMonitor pcap)
+target_link_libraries(NetworkMonitor pcap boost_program_options)
