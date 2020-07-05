@@ -4,7 +4,9 @@
 #include <linux/ip.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
+#include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <net/if.h>
 #include <ctime>
 #include <cstring>
